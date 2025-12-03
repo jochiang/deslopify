@@ -7,21 +7,24 @@
   let isEnabled = true;
   let hiddenCount = 0;
 
-  // Regex to match emojis (comprehensive pattern)
+  // Regex to match emojis (comprehensive pattern covering all Unicode emoji ranges)
   const emojiRegex = /\p{Emoji_Presentation}|\p{Extended_Pictographic}/gu;
-  
+
   // Em dash character
   const emDashRegex = /\u2014/g;
 
   // Check if text contains slop indicators
   function containsSlop(text) {
     if (!text) return false;
+    // Reset regex lastIndex to avoid state issues with global flag
+    emojiRegex.lastIndex = 0;
+    emDashRegex.lastIndex = 0;
     return emojiRegex.test(text) || emDashRegex.test(text);
   }
 
   // Get the post text content
   function getPostText(postElement) {
-    // LinkedIn post content selectors
+    // LinkedIn post content selectors - try specific ones first
     const contentSelectors = [
       '.feed-shared-update-v2__description',
       '.feed-shared-text',
@@ -29,7 +32,10 @@
       '.update-components-text',
       '[data-ad-preview="message"]',
       '.break-words',
-      '.feed-shared-update-v2__commentary'
+      '.feed-shared-update-v2__commentary',
+      '.feed-shared-text-view',
+      '[dir="ltr"]',
+      'span[aria-hidden="true"]'
     ];
 
     let text = '';
@@ -39,6 +45,12 @@
         text += ' ' + el.textContent;
       });
     }
+    
+    // Fallback: if no text found via selectors, use the whole post's text
+    if (!text.trim()) {
+      text = postElement.textContent || '';
+    }
+    
     return text;
   }
 
