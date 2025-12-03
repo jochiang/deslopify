@@ -6,6 +6,18 @@
 
   let isEnabled = true;
   let hiddenCount = 0;
+  
+  // Rate limiting settings
+  const RATE_LIMIT = {
+    maxPostsPerBatch: 10,        // Max posts to process at once
+    batchCooldown: 1000,         // ms between batches
+    observerDebounce: 500,       // ms to wait after DOM changes
+    minTimeBetweenRuns: 2000,    // Minimum ms between full processing runs
+  };
+  
+  let lastProcessTime = 0;
+  let isProcessing = false;
+  let pendingProcess = false;
 
   // Regex to match emojis (comprehensive pattern covering all Unicode emoji ranges)
   const emojiRegex = /\p{Emoji_Presentation}|\p{Extended_Pictographic}/gu;
@@ -54,10 +66,20 @@
     return text;
   }
 
+  // Check if element is in viewport (with buffer)
+  function isInViewport(element) {
+    const rect = element.getBoundingClientRect();
+    const buffer = 500; // pixels above/below viewport to include
+    return (
+      rect.bottom >= -buffer &&
+      rect.top <= (window.innerHeight || document.documentElement.clientHeight) + buffer
+    );
+  }
+
   // Process a single post
   function processPost(postElement) {
-    if (!isEnabled) return;
-    if (postElement.dataset.deslopified) return;
+    if (!isEnabled) return false;
+    if (postElement.dataset.deslopified) return false;
 
     const text = getPostText(postElement);
     
@@ -65,30 +87,77 @@
       postElement.classList.add('deslopify-hidden');
       postElement.dataset.deslopified = 'hidden';
       hiddenCount++;
-      updateBadge();
+      return true;
     } else {
       postElement.dataset.deslopified = 'clean';
+      return false;
     }
   }
 
-  // Find and process all posts
+  // Find and process posts with rate limiting
   function processAllPosts() {
+    const now = Date.now();
+    
+    // Rate limit: don't run too frequently
+    if (now - lastProcessTime < RATE_LIMIT.minTimeBetweenRuns) {
+      if (!pendingProcess) {
+        pendingProcess = true;
+        setTimeout(() => {
+          pendingProcess = false;
+          processAllPosts();
+        }, RATE_LIMIT.minTimeBetweenRuns);
+      }
+      return;
+    }
+    
+    if (isProcessing) {
+      pendingProcess = true;
+      return;
+    }
+    
+    isProcessing = true;
+    lastProcessTime = now;
+
     const postSelectors = [
       '.feed-shared-update-v2',
-      '.occludable-update',
-      '[data-urn]'
+      '.occludable-update'
     ];
 
+    // Collect unprocessed posts
+    let unprocessedPosts = [];
+    
     postSelectors.forEach(selector => {
       document.querySelectorAll(selector).forEach(post => {
-        // Make sure we're getting top-level posts
-        if (post.closest('.feed-shared-update-v2') === post || 
-            post.matches('.occludable-update') ||
-            (post.matches('[data-urn]') && post.dataset.urn?.includes('activity'))) {
-          processPost(post);
+        if (!post.dataset.deslopified && isInViewport(post)) {
+          // Make sure we're getting top-level posts
+          if (post.closest('.feed-shared-update-v2') === post || 
+              post.matches('.occludable-update')) {
+            unprocessedPosts.push(post);
+          }
         }
       });
     });
+
+    // Process only a limited batch
+    const batch = unprocessedPosts.slice(0, RATE_LIMIT.maxPostsPerBatch);
+    let hiddenInBatch = 0;
+    
+    batch.forEach(post => {
+      if (processPost(post)) {
+        hiddenInBatch++;
+      }
+    });
+    
+    if (hiddenInBatch > 0) {
+      updateBadge();
+    }
+    
+    isProcessing = false;
+    
+    // If there are more posts to process, schedule next batch
+    if (unprocessedPosts.length > RATE_LIMIT.maxPostsPerBatch) {
+      setTimeout(processAllPosts, RATE_LIMIT.batchCooldown);
+    }
   }
 
   // Show all hidden posts
@@ -110,26 +179,51 @@
     chrome.runtime.sendMessage({ action: 'updateCount', count: hiddenCount });
   }
 
-  // Set up mutation observer to catch new posts as they load
+  // Set up mutation observer with rate limiting
   function setupObserver() {
+    let observerTimeout = null;
+    
     const observer = new MutationObserver((mutations) => {
-      let shouldProcess = false;
-      mutations.forEach(mutation => {
+      // Only care about added nodes that might be posts
+      let relevantChange = false;
+      for (const mutation of mutations) {
         if (mutation.addedNodes.length > 0) {
-          shouldProcess = true;
+          for (const node of mutation.addedNodes) {
+            if (node.nodeType === 1) { // Element node
+              relevantChange = true;
+              break;
+            }
+          }
         }
-      });
-      if (shouldProcess) {
-        // Debounce processing
-        clearTimeout(window.deslopifyTimeout);
-        window.deslopifyTimeout = setTimeout(processAllPosts, 200);
+        if (relevantChange) break;
+      }
+      
+      if (relevantChange) {
+        // Debounce with longer delay
+        clearTimeout(observerTimeout);
+        observerTimeout = setTimeout(processAllPosts, RATE_LIMIT.observerDebounce);
       }
     });
 
-    observer.observe(document.body, {
+    // Only observe the main feed container if possible
+    const feedContainer = document.querySelector('.scaffold-finite-scroll__content') || 
+                          document.querySelector('main') || 
+                          document.body;
+    
+    observer.observe(feedContainer, {
       childList: true,
       subtree: true
     });
+  }
+  
+  // Handle scroll events to process newly visible posts
+  function setupScrollHandler() {
+    let scrollTimeout = null;
+    
+    window.addEventListener('scroll', () => {
+      clearTimeout(scrollTimeout);
+      scrollTimeout = setTimeout(processAllPosts, 300);
+    }, { passive: true });
   }
 
   // Initialize
@@ -143,6 +237,7 @@
       }
       
       setupObserver();
+      setupScrollHandler();
     });
   }
 
