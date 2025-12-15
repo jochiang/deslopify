@@ -27,6 +27,10 @@ Posts containing:
 - **Emojis** — 😀 🚀 💡 ✨ etc.
 - **Em dashes** — the long dash (—) commonly used in "thought leader" style posts
 
+## Vibe code disclosure
+
+Most of this was vibe-coded. Use at your own risk. The rate limits are set fairly aggressively and may end up nuking your entire LinkedIn feed (if it is sloppy enough).  
+
 ## License
 
 MIT
